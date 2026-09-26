@@ -62,9 +62,11 @@ jobs:
           # no-shared: static libs — no runtime library path juggling in the package
           ./Configure no-asm no-shared \
             --prefix="$PWD/install" \
-            > ../build_logs/openssl-configure.log 2>&1
-          make -j"$(nproc)" > ../build_logs/openssl-make.log 2>&1
-          make install > ../build_logs/openssl-install.log 2>&1
+            2>&1 | tee ../build_logs/openssl-configure.log
+          make -j"$(nproc)" \
+            2>&1 | tee ../build_logs/openssl-make.log
+          make install \
+            2>&1 | tee ../build_logs/openssl-install.log
           ls -l install/bin/openssl install/lib/libcrypto.a install/lib/libssl.a
 
       - name: Build fec CLI
