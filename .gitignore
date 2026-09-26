@@ -26,3 +26,6 @@ openssl/demos/
 openssl/test/
 openssl/apps/*.pem
 openssl/demos/
+# Nested project metadata that would be picked up by the runner
+openssl/.github/
+fec/.github/
