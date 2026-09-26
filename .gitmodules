@@ -1,0 +1,6 @@
+[submodule "fec"]
+	path = fec
+	url = https://android.googlesource.com/platform/external/fec
+[submodule "openssl"]
+	path = openssl
+	url = https://github.com/openssl/openssl

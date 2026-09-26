@@ -13,6 +13,16 @@ build_logs/
 logs/
 *.spec
 
-# Vendored upstream source trees (fetched at build time, not committed)
-/fec/
-/openssl/
+# Key-material test/demo fixtures: excluded from source builds to keep
+# GitHub push protection (secret scanning) happy. Not needed to build the
+# openssl CLI or libcrypto.
+openssl/test/
+openssl/apps/*.pem
+openssl/demos/
+
+# Key-material test/demo fixtures: excluded from source builds to keep
+# GitHub push protection (secret scanning) happy. Not needed to build the
+# openssl CLI or libcrypto.
+openssl/test/
+openssl/apps/*.pem
+openssl/demos/
