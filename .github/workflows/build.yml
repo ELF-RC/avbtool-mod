@@ -17,16 +17,8 @@ jobs:
         include:
           - arch: amd64
             runner: ubuntu-22.04
-            builder: pyinstaller
           - arch: arm64
             runner: ubuntu-22.04-arm
-            builder: pyinstaller
-          - arch: amd64
-            runner: ubuntu-22.04
-            builder: nuitka
-          - arch: arm64
-            runner: ubuntu-22.04-arm
-            builder: nuitka
 
     runs-on: ${{ matrix.runner }}
 
@@ -42,55 +34,73 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential ccache patchelf zip
+          sudo apt-get install -y build-essential ccache patchelf zip perl
 
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          if [ "${{ matrix.builder }}" = "pyinstaller" ]; then
-            python -m pip install pyinstaller cryptography
-          else
-            python -m pip install nuitka ordered-set zstandard cryptography
-          fi
+          python -m pip install pyinstaller
 
       - name: Resolve release metadata
         id: meta
         run: |
           VERSION="$(python -c 'text=open("avbtool.py", encoding="utf-8").read().splitlines(); names=("MAJOR", "MINOR", "SUB"); print(".".join(next(line.split("=", 1)[1].strip() for line in text if line.startswith("AVB_VERSION_%s = " % name)) for name in names))')"
           DATE="$(TZ=Asia/Shanghai date +%Y%m%d)"
-          NAME="avbtool-mod-${VERSION}-${{ matrix.arch }}-${{ matrix.builder }}-${DATE}"
+          NAME="avbtool-mod-${VERSION}-${{ matrix.arch }}-${DATE}"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "date=$DATE" >> "$GITHUB_OUTPUT"
           echo "name=$NAME" >> "$GITHUB_OUTPUT"
 
-      - name: Build with PyInstaller
-        if: matrix.builder == 'pyinstaller'
+      # ------------------------------------------------------------------
+      # 1) OpenSSL CLI + shared libcrypto (used by the fec tool)
+      # ------------------------------------------------------------------
+      - name: Build OpenSSL
         run: |
           mkdir -p build_logs
+          cd openssl
+          # no-asm: skip Perl-generated assembly (faster, fewer toolchain deps)
+          # no-shared: static libs — no runtime library path juggling in the package
+          ./Configure no-asm no-shared \
+            --prefix="$PWD/install" \
+            > ../build_logs/openssl-configure.log 2>&1
+          make -j"$(nproc)" > ../build_logs/openssl-make.log 2>&1
+          make install > ../build_logs/openssl-install.log 2>&1
+          ls -l install/bin/openssl install/lib/libcrypto.a install/lib/libssl.a
+
+      - name: Build fec CLI
+        run: |
+          mkdir -p bin
+          # RS-8 char codec (extern/fec) + standalone main.
+          # fec.c provides the partab/P_init tables the codec needs.
+          # Links against the statically-built libcrypto (no runtime deps).
+          cc -O2 -o bin/fec \
+            fec_core/fec_cli.c \
+            fec/encode_rs_char.c fec/init_rs_char.c fec/fec.c \
+            -Ifec -Iopenssl/install/include \
+            -Lopenssl/install/lib -lcrypto
+          ./bin/fec --print-fec-size 4096 --roots 2
+          echo "fec CLI OK"
+
+      - name: Build avbtool (PyInstaller)
+        run: |
           python -m PyInstaller \
             --clean \
             --onefile \
             --name avbtool \
-            --collect-all cryptography \
-            avbtool.py > build_logs/build_out.log 2>&1
+            avbtool.py > build_logs/pyinstaller.log 2>&1
+          ls -l dist/avbtool
 
-      - name: Build with Nuitka
-        if: matrix.builder == 'nuitka'
+      - name: Assemble package
         run: |
-          set -o pipefail
-          mkdir -p build_logs
-          python -m nuitka \
-            --standalone \
-            --onefile \
-            --output-filename=avbtool \
-            --output-dir=.avbtool-dist \
-            --include-package=cryptography \
-            --assume-yes-for-downloads \
-            --verbose \
-            --verbose-output=build_logs/nuitka-build.log \
-            --onefile-no-compression \
-            --static-libpython=yes \
-            avbtool.py > build_logs/nuitka-stdout.log 2>&1
+          rm -rf pkg && mkdir -p pkg/bin
+          install -m 755 dist/avbtool pkg/bin/avbtool
+          install -m 755 bin/fec pkg/bin/fec
+          install -m 755 openssl/install/bin/openssl pkg/bin/openssl
+          # All three binaries are static/self-contained (no runtime .so needed).
+          (cd pkg && tar -czf "../${{ steps.meta.outputs.name }}.tar.gz" bin)
+          tar -tzvf "${{ steps.meta.outputs.name }}.tar.gz"
+          echo "=== package contents ==="
+          ls -lh pkg/bin/
 
       - name: Package build logs
         if: always()
@@ -101,7 +111,6 @@ jobs:
             echo "Date: $(TZ=Asia/Shanghai date '+%Y-%m-%d %H:%M:%S %Z')"
             echo "Runner: ${{ matrix.runner }}"
             echo "Architecture: ${{ matrix.arch }}"
-            echo "Builder: ${{ matrix.builder }}"
             echo ""
             echo "=== System Info ==="
             uname -a
@@ -109,17 +118,7 @@ jobs:
             echo "=== Python Version ==="
             python --version
           } > logs/workflow-env.log
-
-          if [ "${{ matrix.builder }}" = "nuitka" ]; then
-            python -m nuitka --version > logs/nuitka-version.log 2>&1 || true
-          else
-            python -m PyInstaller --version > logs/pyinstaller-version.log 2>&1 || true
-          fi
-
-          mkdir -p build_logs .avbtool-dist dist
-          find build_logs .avbtool-dist dist -type f \
-            \( -name '*.log' -o -name '*.txt' -o -name '*.toc' -o -name '*.warnings' \) \
-            -exec cp --parents {} logs/ \;
+          find build_logs -type f -exec cp --parents {} logs/ \; 2>/dev/null || true
 
       - name: Upload build logs
         if: always()
@@ -131,19 +130,11 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
-      - name: Package avbtool
-        run: |
-          if [ "${{ matrix.builder }}" = "pyinstaller" ]; then
-            BIN="dist/avbtool"
-          else
-            BIN=".avbtool-dist/avbtool"
-          fi
-          install -m 755 "$BIN" "avbtool-${{ steps.meta.outputs.version }}-${{ matrix.arch }}"
-
-      - name: Upload avbtool
+      - name: Upload package
         uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.meta.outputs.name }}
-          path: avbtool-${{ steps.meta.outputs.version }}-${{ matrix.arch }}
+          path: ${{ steps.meta.outputs.name }}.tar.gz
+          compression-level: 0
           if-no-files-found: error
           retention-days: 30
