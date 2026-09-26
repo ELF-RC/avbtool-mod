@@ -75,11 +75,12 @@ jobs:
           # RS-8 char codec (extern/fec) + standalone main.
           # fec.c provides the partab/P_init tables the codec needs.
           # Links against the statically-built libcrypto (no runtime deps).
-          cc -O2 -o bin/fec \
+          # -static-libgcc so the binary has no libgcc_s.so dependency.
+          gcc -O2 -o bin/fec \
             fec_core/fec_cli.c \
             fec/encode_rs_char.c fec/init_rs_char.c fec/fec.c \
             -Ifec -Iopenssl/install/include \
-            -Lopenssl/install/lib -lcrypto
+            -Lopenssl/install/lib -lcrypto -static-libgcc
           ./bin/fec --print-fec-size 4096 --roots 2
           echo "fec CLI OK"
 
